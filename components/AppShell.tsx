@@ -7,7 +7,9 @@ import {
   Activity,
   BarChart3,
   Bot,
+  Facebook,
   FileText,
+  Instagram,
   LayoutDashboard,
   Layers,
   LineChart,
@@ -16,6 +18,7 @@ import {
   Menu,
   Sparkles,
   X,
+  Youtube,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LiveDot } from "@/components/ui";
@@ -34,6 +37,14 @@ const NAV: Array<{ section: string; items: NavItem[] }> = [
       { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
       { name: "Content", href: "/content", icon: Layers },
       { name: "Compare", href: "/compare", icon: BarChart3 },
+    ],
+  },
+  {
+    section: "Platforms",
+    items: [
+      { name: "YouTube", href: "/youtube", icon: Youtube },
+      { name: "Instagram", href: "/instagram", icon: Instagram },
+      { name: "Facebook", href: "/facebook", icon: Facebook },
     ],
   },
   {

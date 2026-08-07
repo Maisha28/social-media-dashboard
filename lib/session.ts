@@ -2,6 +2,7 @@ import { sign, verify } from "./crypto";
 
 export const SESSION_COOKIE = "sp_session";
 export const META_COOKIE = "sp_meta";
+export const YOUTUBE_COOKIE = "sp_youtube";
 export const OAUTH_STATE_COOKIE = "sp_oauth_state";
 
 const SESSION_MAX_AGE = 60 * 60 * 24 * 7; // 7 days

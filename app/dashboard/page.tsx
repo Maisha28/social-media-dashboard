@@ -51,7 +51,9 @@ import {
 } from "@/lib/analytics";
 
 export default function DashboardPage() {
-  const { posts, summary, source, loading, notice, refresh } = useAnalytics();
+  const { posts, summary, source, livePlatforms = [], loading, notice, refresh } = useAnalytics();
+
+  const liveLabel = livePlatforms.map((p) => PLATFORM_META[p]?.label ?? p).join(" + ");
 
   const series = React.useMemo(() => toSeries(posts, 30), [posts]);
   const platforms = React.useMemo(() => byPlatform(posts), [posts]);
@@ -91,9 +93,9 @@ export default function DashboardPage() {
         description={`${summary.totalPosts} posts across ${platforms.length} channel${platforms.length === 1 ? "" : "s"} over the last 30 days.`}
         actions={
           <>
-            <Badge tone={source === "meta" ? "success" : source === "supabase" ? "info" : "warning"}>
-              {source === "meta"
-                ? "Live from Meta"
+            <Badge tone={source === "live" ? "success" : source === "supabase" ? "info" : "warning"}>
+              {source === "live"
+                ? `Live · ${liveLabel}`
                 : source === "supabase"
                   ? "Supabase"
                   : "Sample data"}

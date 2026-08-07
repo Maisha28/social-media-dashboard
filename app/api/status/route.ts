@@ -36,8 +36,12 @@ async function probeSupabase(): Promise<ServiceStatus> {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 6000);
 
-    const res = await fetch(`${SUPABASE_URL}/rest/v1/`, {
-      headers: { apikey: SUPABASE_ANON_KEY, Authorization: `Bearer ${SUPABASE_ANON_KEY}` },
+    // The bare /rest/v1/ root now requires a Supabase "secret" key under their
+    // newer sb_publishable_/sb_secret_ key format — publishable/anon keys get
+    // a 401 there even when perfectly valid. /auth/v1/health is a stable,
+    // always-present endpoint that accepts the publishable key correctly.
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/health`, {
+      headers: { apikey: SUPABASE_ANON_KEY },
       signal: controller.signal,
       cache: "no-store",
     }).finally(() => clearTimeout(timeout));

@@ -14,9 +14,22 @@ function readPublic(name: string, value: string | undefined): string {
   return trimmed;
 }
 
-export const SUPABASE_URL = readPublic(
-  "NEXT_PUBLIC_SUPABASE_URL",
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
+/**
+ * Normalises common copy-paste mistakes: a trailing slash, or the REST path
+ * (`/rest/v1/`) some people copy from the API docs example instead of the
+ * bare Project URL a few lines above it on the same settings page.
+ */
+function normaliseSupabaseUrl(raw: string): string {
+  if (!raw) return "";
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return raw.replace(/\/+$/, "");
+  }
+}
+
+export const SUPABASE_URL = normaliseSupabaseUrl(
+  readPublic("NEXT_PUBLIC_SUPABASE_URL", process.env.NEXT_PUBLIC_SUPABASE_URL),
 );
 
 export const SUPABASE_ANON_KEY = readPublic(
