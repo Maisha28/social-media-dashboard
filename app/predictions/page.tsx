@@ -1,188 +1,254 @@
-'use client';
+"use client";
 
-import { useEffect, useState } from 'react';
-import { fetchPosts } from '@/lib/supabase-client';
+import * as React from "react";
 import {
-  LineChart,
+  Area,
+  ComposedChart,
+  CartesianGrid,
+  Legend,
   Line,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-  BarChart,
-  Bar
-} from 'recharts';
+} from "recharts";
+import { CalendarClock, Info, TrendingDown, TrendingUp } from "lucide-react";
+import { Badge, Card, DemoNotice, PageHeader, SectionHeading, StatTile } from "@/components/ui";
+import { ChartFrame, ChartTooltip, axisProps } from "@/components/charts";
+import { useAnalytics } from "@/lib/use-analytics";
+import { formatCompact, linearForecast, toSeries, weightedEngagement } from "@/lib/analytics";
 
-interface Post {
-  id: number;
-  title: string;
-  likes: number;
-  comments: number;
-  shares: number;
-  created_at: string;
-  platform?: string;
-}
+const HORIZON = 14;
 
 export default function PredictionsPage() {
-  const [posts, setPosts] = useState<Post[]>([]);
-  const [selectedPost, setSelectedPost] = useState<Post | null>(null);
+  const { posts, source, loading, notice } = useAnalytics();
 
-  useEffect(() => {
-    fetchPosts().then(setPosts);
-  }, []);
+  const series = React.useMemo(() => toSeries(posts, 30), [posts]);
 
-  /* ---------- Helpers ---------- */
+  const model = React.useMemo(() => {
+    const values = series.map((point) => point.engagement);
+    return linearForecast(values, HORIZON);
+  }, [series]);
 
-  const engagement = (p: Post) =>
-    p.likes * 1 + p.comments * 2 + p.shares * 3;
-
-  /* ---------- Linear Regression ---------- */
-  const regressionData = posts.map((p, i) => ({
-    index: i + 1,
-    engagement: engagement(p),
-  }));
-
-  const calculateRegression = () => {
-    const n = regressionData.length;
-    if (n < 2) return [];
-
-    const sumX = regressionData.reduce((s, d) => s + d.index, 0);
-    const sumY = regressionData.reduce((s, d) => s + d.engagement, 0);
-    const sumXY = regressionData.reduce((s, d) => s + d.index * d.engagement, 0);
-    const sumX2 = regressionData.reduce((s, d) => s + d.index * d.index, 0);
-
-    const slope =
-      (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
-    const intercept = (sumY - slope * sumX) / n;
-
-    return regressionData.map(d => ({
-      ...d,
-      predicted: slope * d.index + intercept,
+  /**
+   * Confidence band. Rather than invent a statistical interval we widen the
+   * band with the forecast horizon, which is honest about the fact that a
+   * simple linear fit degrades the further out it reaches.
+   */
+  const chartData = React.useMemo(() => {
+    const actual = series.map((point, index) => ({
+      label: point.label,
+      actual: point.engagement,
+      fitted: Math.max(0, model.predict(index + 1)),
+      band: undefined as [number, number] | undefined,
     }));
-  };
 
-  const regressionLine = calculateRegression();
+    const lastDate = new Date();
+    const projected = model.forecast.map((value, index) => {
+      const date = new Date(lastDate);
+      date.setDate(date.getDate() + index + 1);
+      const spread = value * (0.12 + (index / HORIZON) * 0.28);
+      return {
+        label: date.toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        actual: undefined as number | undefined,
+        fitted: value,
+        band: [Math.max(0, value - spread), value + spread] as [number, number],
+      };
+    });
 
-  /* ---------- Logistic-style Post Success ---------- */
-  const postSuccessScore = (p: Post) => {
-    const avgEngagement =
-      posts.reduce((s, x) => s + engagement(x), 0) / posts.length;
+    return [...actual, ...projected];
+  }, [series, model]);
 
-    const score = engagement(p) / avgEngagement;
+  const recentAverage = React.useMemo(() => {
+    const window = series.slice(-7);
+    if (window.length === 0) return 0;
+    return window.reduce((total, point) => total + point.engagement, 0) / window.length;
+  }, [series]);
 
-    // squash into 0–1 range (sigmoid-like)
-    const probability = 1 / (1 + Math.exp(-2 * (score - 1)));
+  const projectedAverage = React.useMemo(() => {
+    if (model.forecast.length === 0) return 0;
+    return model.forecast.reduce((total, value) => total + value, 0) / model.forecast.length;
+  }, [model.forecast]);
 
-    return Math.min(Math.max(probability, 0), 1);
-  };
+  const changePercent =
+    recentAverage > 0 ? ((projectedAverage - recentAverage) / recentAverage) * 100 : 0;
+  const rising = model.slope >= 0;
+
+  /* Best posting windows, derived from when the strongest posts actually went
+     out rather than from a generic "post at 6pm" rule of thumb. */
+  const bestDays = React.useMemo(() => {
+    const names = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const totals = new Array(7).fill(0).map(() => ({ engagement: 0, count: 0 }));
+
+    for (const post of posts) {
+      const day = new Date(post.created_at).getDay();
+      totals[day].engagement += weightedEngagement(post);
+      totals[day].count += 1;
+    }
+
+    return totals
+      .map((entry, index) => ({
+        day: names[index],
+        average: entry.count > 0 ? Math.round(entry.engagement / entry.count) : 0,
+        count: entry.count,
+      }))
+      .filter((entry) => entry.count > 0)
+      .sort((a, b) => b.average - a.average);
+  }, [posts]);
+
+  if (loading) {
+    return (
+      <>
+        <div className="skeleton h-16 w-72 rounded-xl" />
+        <div className="skeleton h-96 rounded-2xl" />
+      </>
+    );
+  }
 
   return (
-    <div className="p-8 max-w-7xl mx-auto space-y-12">
-      <h1 className="text-3xl font-bold">📈 Predictions & Forecasting</h1>
+    <>
+      <PageHeader
+        eyebrow="Forecast"
+        title="Predictions"
+        description={`A least-squares trend fitted to the last ${series.length} days, projected ${HORIZON} days forward.`}
+        actions={
+          <Badge tone={rising ? "success" : "warning"}>
+            {rising ? <TrendingUp className="size-3" /> : <TrendingDown className="size-3" />}
+            {rising ? "Trending up" : "Trending down"}
+          </Badge>
+        }
+      />
 
-      {/* ---------- Regression Chart ---------- */}
-      <section className="bg-white rounded-xl shadow p-6">
-        <h2 className="text-xl font-semibold mb-2">
-          Engagement Trend Prediction
-        </h2>
+      {source === "demo" && <DemoNotice notice={notice} />}
 
-        <p className="text-gray-600 mb-4">
-          This line chart shows how engagement has changed over time and
-          projects future engagement using linear regression.
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatTile
+          label="7-day average"
+          value={Math.round(recentAverage)}
+          accent="cyan"
+          hint="weighted engagement/day"
+          format={formatCompact}
+        />
+        <StatTile
+          label={`Projected avg (${HORIZON}d)`}
+          value={Math.round(projectedAverage)}
+          delta={Number(changePercent.toFixed(1))}
+          accent="brand"
+          format={formatCompact}
+        />
+        <StatTile
+          label="Daily trend"
+          value={Math.round(Math.abs(model.slope))}
+          accent={rising ? "emerald" : "rose"}
+          hint={rising ? "gain per day" : "loss per day"}
+          format={formatCompact}
+        />
+        <StatTile
+          label={`${HORIZON}-day total`}
+          value={Math.round(model.forecast.reduce((a, b) => a + b, 0))}
+          accent="amber"
+          hint="projected engagement"
+          format={formatCompact}
+        />
+      </div>
+
+      <Card lit className="p-5 sm:p-6">
+        <SectionHeading
+          title="Engagement forecast"
+          description="Solid line is observed history; the shaded cone is the projection and its widening uncertainty."
+        />
+        <ChartFrame height={360} className="mt-5">
+          <ResponsiveContainer>
+            {/* Extra top margin keeps the "today" reference label off the edge. */}
+            <ComposedChart data={chartData} margin={{ top: 22, right: 8, left: -18, bottom: 0 }}>
+              <defs>
+                <linearGradient id="gradBand" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--chart-1)" stopOpacity={0.28} />
+                  <stop offset="100%" stopColor="var(--chart-1)" stopOpacity={0.04} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" vertical={false} />
+              <XAxis dataKey="label" {...axisProps} minTickGap={30} />
+              <YAxis {...axisProps} tickFormatter={formatCompact} width={52} />
+              <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--line-strong)" }} />
+              <Legend wrapperStyle={{ fontSize: 12, color: "var(--ink-muted)", paddingTop: 8 }} />
+
+              <ReferenceLine
+                x={series[series.length - 1]?.label}
+                stroke="var(--line-strong)"
+                strokeDasharray="4 4"
+                label={{ value: "today", fill: "var(--ink-faint)", fontSize: 11, position: "top" }}
+              />
+              <Area
+                dataKey="band"
+                name="Confidence range"
+                stroke="none"
+                fill="url(#gradBand)"
+                connectNulls
+              />
+              <Line
+                type="monotone"
+                dataKey="actual"
+                name="Observed"
+                stroke="var(--chart-2)"
+                strokeWidth={2.5}
+                dot={false}
+              />
+              <Line
+                type="monotone"
+                dataKey="fitted"
+                name="Trend / forecast"
+                stroke="var(--chart-1)"
+                strokeWidth={2}
+                strokeDasharray="5 4"
+                dot={false}
+              />
+            </ComposedChart>
+          </ResponsiveContainer>
+        </ChartFrame>
+
+        <p className="mt-4 flex items-start gap-2 rounded-xl border border-white/8 bg-white/[0.03] px-3.5 py-3 text-xs leading-relaxed text-ink-muted">
+          <Info className="mt-0.5 size-3.5 shrink-0 text-ink-faint" />
+          This is a linear extrapolation of past engagement, not a guarantee. It assumes
+          your posting cadence and audience stay roughly constant — a campaign, an
+          algorithm change or a viral post will all break the projection.
         </p>
+      </Card>
 
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={regressionLine}>
-            <CartesianGrid strokeDasharray="3 3" />
-            <XAxis dataKey="index" />
-            <YAxis />
-            <Tooltip />
-            <Line
-              type="monotone"
-              dataKey="engagement"
-              stroke="#6366F1"
-              name="Actual Engagement"
-            />
-            <Line
-              type="monotone"
-              dataKey="predicted"
-              stroke="#22C55E"
-              strokeDasharray="5 5"
-              name="Predicted Trend"
-            />
-          </LineChart>
-        </ResponsiveContainer>
-
-        <p className="mt-4 text-sm text-gray-500">
-          🧠 AI Insight: If the green dashed line slopes upward, your content
-          strategy is improving. A downward slope suggests engagement fatigue.
-        </p>
-      </section>
-
-      {/* ---------- Post Selector ---------- */}
-      <section className="bg-white rounded-xl shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">
-          Post-wise Performance Checker
-        </h2>
-
-        <select
-          className="border rounded-lg px-4 py-2 mb-6"
-          onChange={(e) =>
-            setSelectedPost(
-              posts.find(p => p.id === Number(e.target.value)) || null
-            )
+      <Card lit className="p-5 sm:p-6">
+        <SectionHeading
+          title="Best days to publish"
+          description="Average weighted engagement per post, by the day it went out."
+          action={
+            <span className="chip">
+              <CalendarClock className="size-3" />
+              Based on {posts.length} posts
+            </span>
           }
-        >
-          <option value="">Select a post</option>
-          {posts.map(p => (
-            <option key={p.id} value={p.id}>
-              {p.title}
-            </option>
-          ))}
-        </select>
-
-        {selectedPost && (
-          <>
-            {/* Bar Graph */}
-            <ResponsiveContainer width="100%" height={250}>
-              <BarChart
-                data={[
-                  { name: 'Likes', value: selectedPost.likes },
-                  { name: 'Comments', value: selectedPost.comments },
-                  { name: 'Shares', value: selectedPost.shares },
-                ]}
-              >
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="value" fill="#6366F1" />
-              </BarChart>
-            </ResponsiveContainer>
-
-            {/* Logistic Result */}
-            <div className="mt-6">
-              <h3 className="text-lg font-semibold">
-                Will this post work?
-              </h3>
-
-              <p className="mt-2 text-gray-700">
-                Success Probability:{' '}
-                <span className="font-bold">
-                  {(postSuccessScore(selectedPost) * 100).toFixed(1)}%
-                </span>
-              </p>
-
-              <p className="text-sm text-gray-500 mt-2">
-                🧠 AI Insight: This probability is calculated by comparing this
-                post’s engagement against your historical average using a
-                logistic scoring model.
-              </p>
-            </div>
-          </>
-        )}
-      </section>
-    </div>
+        />
+        <ul className="mt-5 space-y-2.5">
+          {bestDays.map((entry, index) => {
+            const max = bestDays[0]?.average || 1;
+            return (
+              <li key={entry.day} className="flex items-center gap-3">
+                <span className="w-24 shrink-0 text-sm text-ink-muted">{entry.day}</span>
+                <div className="h-7 flex-1 overflow-hidden rounded-lg bg-white/5">
+                  <div
+                    className="flex h-full items-center justify-end rounded-lg bg-gradient-to-r from-violet-600/70 to-cyan-500/70 px-2.5 transition-[width] duration-700"
+                    style={{ width: `${Math.max(8, (entry.average / max) * 100)}%` }}
+                  >
+                    <span className="tabular text-xs font-semibold text-white">
+                      {formatCompact(entry.average)}
+                    </span>
+                  </div>
+                </div>
+                {index === 0 && <Badge tone="success">Best</Badge>}
+              </li>
+            );
+          })}
+        </ul>
+      </Card>
+    </>
   );
 }

@@ -1,812 +1,380 @@
-'use client';
+"use client";
 
-import Sidebar from '@/components/Sidebar';
-import { useState, useEffect } from 'react';
-import { supabase } from '@/lib/supabase';
-
-interface PlatformData {
-  name: string;
-  totalPosts: number;
-  totalLikes: number;
-  totalComments: number;
-  totalShares: number;
-  avgEngagement: number;
-  bestPost: any;
-  performance: string;
-}
-
-interface ContentTypeData {
-  type: string;
-  totalPosts: number;
-  totalLikes: number;
-  totalComments: number;
-  totalShares: number;
-  avgEngagement: number;
-  performance: string;
-}
-
-interface ComparisonData {
-  platforms: PlatformData[];
-  contentTypes: ContentTypeData[];
-  overall: {
-    totalPosts: number;
-    totalLikes: number;
-    totalComments: number;
-    totalShares: number;
-    avgEngagement: number;
-  };
-}
+import * as React from "react";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  PolarAngleAxis,
+  PolarGrid,
+  PolarRadiusAxis,
+  Radar,
+  RadarChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { GitCompareArrows, Trophy } from "lucide-react";
+import { Badge, Card, DemoNotice, EmptyState, PageHeader, SectionHeading } from "@/components/ui";
+import { ChartFrame, ChartTooltip, axisProps } from "@/components/charts";
+import { PLATFORM_META, useAnalytics } from "@/lib/use-analytics";
+import { engagementRate, formatCompact, summarize, toSeries, weightedEngagement } from "@/lib/analytics";
 
 export default function ComparePage() {
-  const [comparisonData, setComparisonData] = useState<ComparisonData | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
-  const [comparisonType, setComparisonType] = useState<'platforms' | 'contentTypes' | 'overview'>('overview');
-  const [timeRange, setTimeRange] = useState<'7days' | '30days' | 'all'>('all');
-  const [sortBy, setSortBy] = useState<'engagement' | 'posts' | 'likes'>('engagement');
-  const [error, setError] = useState<string | null>(null);
+  const { posts, source, loading, notice } = useAnalytics();
 
-  // Calculate realistic engagement percentage
-  const calculateEngagementPercentage = (post: any) => {
-    const likes = Number(post.likes) || 0;
-    const comments = Number(post.comments) || 0;
-    const shares = Number(post.shares) || 0;
-    
-    const weightedEngagement = (likes * 1) + (comments * 2) + (shares * 3);
-    
-    let engagementPercent = 0;
-    
-    if (weightedEngagement >= 1000) {
-      engagementPercent = 90 + ((weightedEngagement - 1000) / 10000 * 10);
-    } else if (weightedEngagement >= 300) {
-      engagementPercent = 70 + ((weightedEngagement - 300) / 700 * 20);
-    } else if (weightedEngagement >= 100) {
-      engagementPercent = 40 + ((weightedEngagement - 100) / 200 * 30);
-    } else if (weightedEngagement >= 10) {
-      engagementPercent = 10 + ((weightedEngagement - 10) / 90 * 30);
-    } else if (weightedEngagement > 0) {
-      engagementPercent = (weightedEngagement / 10) * 10;
-    }
-    
-    return Math.min(Math.max(engagementPercent, 0), 100);
-  };
+  const platforms = React.useMemo(
+    () => [...new Set(posts.map((post) => post.platform))],
+    [posts],
+  );
 
-  // Get platform color
-  const getPlatformColor = (platform: string) => {
-    const colors: { [key: string]: string } = {
-      'Instagram': '#E4405F',
-      'Facebook': '#1877F2',
-      'Twitter': '#1DA1F2',
-      'LinkedIn': '#0A66C2',
-    };
-    return colors[platform] || '#6B7280';
-  };
+  const [selected, setSelected] = React.useState<string[]>([]);
 
-  // Get platform icon
-  const getPlatformIcon = (platform: string) => {
-    const icons: { [key: string]: string } = {
-      'Instagram': '📷',
-      'Facebook': '👥',
-      'Twitter': '🐦',
-      'LinkedIn': '💼',
-    };
-    return icons[platform] || '📱';
-  };
+  // Default to the two channels with the most posts, once data arrives.
+  React.useEffect(() => {
+    if (selected.length > 0 || platforms.length === 0) return;
+    const ranked = [...platforms].sort(
+      (a, b) =>
+        posts.filter((p) => p.platform === b).length -
+        posts.filter((p) => p.platform === a).length,
+    );
+    setSelected(ranked.slice(0, Math.min(3, ranked.length)));
+  }, [platforms, posts, selected.length]);
 
-  // Get content type icon
-  const getContentTypeIcon = (type: string) => {
-    const icons: { [key: string]: string } = {
-      'reels': '🎬',
-      'carousel': '🖼️',
-      'static': '📸',
-      'video': '🎥',
-    };
-    return icons[type] || '📄';
-  };
-
-  // Get content type color
-  const getContentTypeColor = (type: string) => {
-    const colors: { [key: string]: string } = {
-      'reels': '#8B5CF6',
-      'carousel': '#10B981',
-      'static': '#3B82F6',
-      'video': '#EF4444',
-    };
-    return colors[type] || '#6B7280';
-  };
-
-  // Get performance label
-  const getPerformanceLabel = (engagement: number) => {
-    if (engagement >= 70) return 'Excellent';
-    if (engagement >= 50) return 'Good';
-    if (engagement >= 30) return 'Average';
-    if (engagement >= 10) return 'Low';
-    return 'Very Low';
-  };
-
-  // Get performance color
-  const getPerformanceColor = (engagement: number) => {
-    if (engagement >= 70) return '#10B981';
-    if (engagement >= 50) return '#3B82F6';
-    if (engagement >= 30) return '#F59E0B';
-    if (engagement >= 10) return '#EF4444';
-    return '#6B7280';
-  };
-
-  // Fetch comparison data from Supabase
-  const fetchComparisonData = async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
-
-      console.log('🔍 Fetching comparison data from Supabase...');
-
-      // Get all posts from Supabase
-      const { data: posts, error: postsError } = await supabase
-        .from('posts')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (postsError) {
-        console.error('Error fetching posts:', postsError);
-        setError(`Failed to fetch posts: ${postsError.message}`);
-        
-        // Check if table exists
-        const { data: tableCheck, error: tableError } = await supabase
-          .from('posts')
-          .select('id')
-          .limit(1);
-        
-        if (tableError) {
-          setError('Posts table does not exist or connection failed. Please check your Supabase setup.');
-        }
-        return;
-      }
-
-      console.log(`✅ Fetched ${posts?.length || 0} posts from Supabase`);
-
-      if (!posts || posts.length === 0) {
-        setError('No posts found in your database. Add some posts to see comparisons.');
-        setComparisonData(null);
-        return;
-      }
-
-      // Process the data
-      processComparisonData(posts);
-    } catch (error: any) {
-      console.error('Error in comparison:', error);
-      setError(`Error loading data: ${error.message}`);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const processComparisonData = (posts: any[]) => {
-    console.log('📊 Processing comparison data...');
-    
-    // Initialize platform data
-    const platformsData: { [key: string]: PlatformData } = {};
-    
-    // Initialize content type data
-    const contentTypesData: { [key: string]: ContentTypeData } = {};
-
-    let totalLikes = 0;
-    let totalComments = 0;
-    let totalShares = 0;
-    let totalEngagement = 0;
-
-    // Process each post
-    posts.forEach((post, index) => {
-      // Extract platform (check different field names)
-      const platform = post.platform || post.Platform || 'Unknown';
-      
-      // Extract content type (check different field names)
-      const contentType = post.content_type || post.contentType || post.type || 'static';
-      
-      const likes = Number(post.likes) || 0;
-      const comments = Number(post.comments) || 0;
-      const shares = Number(post.shares) || 0;
-      const engagement = calculateEngagementPercentage(post);
-
-      console.log(`Post ${index + 1}:`, {
-        platform,
-        contentType,
-        likes,
-        comments,
-        shares,
-        engagement
-      });
-
-      // Update platform data
-      if (!platformsData[platform]) {
-        platformsData[platform] = {
-          name: platform,
-          totalPosts: 0,
-          totalLikes: 0,
-          totalComments: 0,
-          totalShares: 0,
-          avgEngagement: 0,
-          bestPost: null,
-          performance: ''
+  const stats = React.useMemo(
+    () =>
+      selected.map((platform) => {
+        const subset = posts.filter((post) => post.platform === platform);
+        return {
+          platform,
+          label: PLATFORM_META[platform]?.label ?? platform,
+          color: PLATFORM_META[platform]?.color ?? "var(--chart-4)",
+          summary: summarize(subset),
+          posts: subset,
         };
-      }
+      }),
+    [selected, posts],
+  );
 
-      platformsData[platform].totalPosts++;
-      platformsData[platform].totalLikes += likes;
-      platformsData[platform].totalComments += comments;
-      platformsData[platform].totalShares += shares;
-      platformsData[platform].avgEngagement += engagement;
+  const comparisonBars = React.useMemo(
+    () =>
+      (["likes", "comments", "shares"] as const).map((metric) => {
+        const row: Record<string, string | number> = { metric };
+        for (const entry of stats) row[entry.label] = entry.summary[metric];
+        return row;
+      }),
+    [stats],
+  );
 
-      // Track best post for this platform
-      if (!platformsData[platform].bestPost || engagement > calculateEngagementPercentage(platformsData[platform].bestPost)) {
-        platformsData[platform].bestPost = post;
-      }
+  /* Radar needs every axis on a comparable 0–100 scale, so each metric is
+     normalised against the strongest channel rather than plotted raw. */
+  const radarData = React.useMemo(() => {
+    const axes = [
+      { key: "Reach", read: (s: ReturnType<typeof summarize>) => s.reach },
+      { key: "Likes", read: (s: ReturnType<typeof summarize>) => s.likes },
+      { key: "Comments", read: (s: ReturnType<typeof summarize>) => s.comments },
+      { key: "Shares", read: (s: ReturnType<typeof summarize>) => s.shares },
+      { key: "Rate", read: (s: ReturnType<typeof summarize>) => s.rate },
+      { key: "Volume", read: (s: ReturnType<typeof summarize>) => s.totalPosts },
+    ];
 
-      // Update content type data
-      if (!contentTypesData[contentType]) {
-        contentTypesData[contentType] = {
-          type: contentType,
-          totalPosts: 0,
-          totalLikes: 0,
-          totalComments: 0,
-          totalShares: 0,
-          avgEngagement: 0,
-          performance: ''
-        };
-      }
-
-      contentTypesData[contentType].totalPosts++;
-      contentTypesData[contentType].totalLikes += likes;
-      contentTypesData[contentType].totalComments += comments;
-      contentTypesData[contentType].totalShares += shares;
-      contentTypesData[contentType].avgEngagement += engagement;
-
-      // Update overall totals
-      totalLikes += likes;
-      totalComments += comments;
-      totalShares += shares;
-      totalEngagement += engagement;
-    });
-
-    // Calculate averages and performance
-    Object.keys(platformsData).forEach(platform => {
-      const data = platformsData[platform];
-      if (data.totalPosts > 0) {
-        data.avgEngagement = parseFloat((data.avgEngagement / data.totalPosts).toFixed(1));
-        data.performance = getPerformanceLabel(data.avgEngagement);
-      }
-    });
-
-    Object.keys(contentTypesData).forEach(type => {
-      const data = contentTypesData[type];
-      if (data.totalPosts > 0) {
-        data.avgEngagement = parseFloat((data.avgEngagement / data.totalPosts).toFixed(1));
-        data.performance = getPerformanceLabel(data.avgEngagement);
-      }
-    });
-
-    // Convert to arrays and sort
-    const platformsArray = Object.values(platformsData)
-      .filter(p => p.totalPosts > 0)
-      .sort((a, b) => {
-        if (sortBy === 'engagement') return b.avgEngagement - a.avgEngagement;
-        if (sortBy === 'posts') return b.totalPosts - a.totalPosts;
-        return b.totalLikes - a.totalLikes;
+    return axes.map((axis) => {
+      const values = stats.map((entry) => axis.read(entry.summary));
+      const max = Math.max(...values, 1);
+      const row: Record<string, string | number> = { axis: axis.key };
+      stats.forEach((entry, index) => {
+        row[entry.label] = Math.round((values[index] / max) * 100);
       });
+      return row;
+    });
+  }, [stats]);
 
-    const contentTypesArray = Object.values(contentTypesData)
-      .filter(c => c.totalPosts > 0)
-      .sort((a, b) => {
-        if (sortBy === 'engagement') return b.avgEngagement - a.avgEngagement;
-        if (sortBy === 'posts') return b.totalPosts - a.totalPosts;
-        return b.totalLikes - a.totalLikes;
+  const trendData = React.useMemo(() => {
+    if (stats.length === 0) return [];
+    const perPlatform = stats.map((entry) => toSeries(entry.posts, 30));
+    return perPlatform[0].map((point, index) => {
+      const row: Record<string, string | number> = { label: point.label };
+      stats.forEach((entry, i) => {
+        row[entry.label] = perPlatform[i][index]?.engagement ?? 0;
       });
-
-    const overallAvgEngagement = posts.length > 0 ? totalEngagement / posts.length : 0;
-
-    console.log('📈 Processed data:', {
-      platforms: platformsArray.length,
-      contentTypes: contentTypesArray.length,
-      overall: {
-        totalPosts: posts.length,
-        avgEngagement: overallAvgEngagement
-      }
+      return row;
     });
+  }, [stats]);
 
-    setComparisonData({
-      platforms: platformsArray,
-      contentTypes: contentTypesArray,
-      overall: {
-        totalPosts: posts.length,
-        totalLikes,
-        totalComments,
-        totalShares,
-        avgEngagement: parseFloat(overallAvgEngagement.toFixed(1)),
-      },
-    });
-  };
+  const winner = React.useMemo(() => {
+    if (stats.length === 0) return null;
+    return [...stats].sort((a, b) => b.summary.rate - a.summary.rate)[0];
+  }, [stats]);
 
-  useEffect(() => {
-    fetchComparisonData();
-  }, [timeRange, sortBy]);
+  function toggle(platform: string) {
+    setSelected((current) =>
+      current.includes(platform)
+        ? current.filter((key) => key !== platform)
+        : [...current, platform],
+    );
+  }
 
-  const handleRefresh = () => {
-    fetchComparisonData();
-  };
-
-  if (isLoading) {
+  if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50">
-        <div className="flex">
-          <Sidebar />
-          <main className="flex-1 p-8 ml-64">
-            <div className="max-w-7xl mx-auto">
-              <div className="flex flex-col items-center justify-center h-96">
-                <div className="w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
-                <p className="mt-4 text-gray-600">Loading comparison data from Supabase...</p>
-                <p className="text-sm text-gray-400 mt-2">tkcouzqipyiaypdyasew.supabase.co</p>
-              </div>
-            </div>
-          </main>
-        </div>
-      </div>
+      <>
+        <div className="skeleton h-16 w-72 rounded-xl" />
+        <div className="skeleton h-96 rounded-2xl" />
+      </>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      <div className="flex">
-        <Sidebar />
-        <main className="flex-1 p-8 ml-64">
-          <div className="max-w-7xl mx-auto">
-            {/* Header */}
-            <div className="flex justify-between items-center mb-8">
-              <div>
-                <h1 className="text-3xl font-bold text-gray-900">Performance Comparison</h1>
-                <p className="text-gray-600 mt-2">
-                  Compare performance across platforms and content types
+    <>
+      <PageHeader
+        eyebrow="Analysis"
+        title="Compare channels"
+        description="Put your channels side by side on reach, engagement mix and efficiency to see where the next post belongs."
+      />
+
+      {source === "demo" && <DemoNotice notice={notice} />}
+
+      <Card className="flex flex-wrap items-center gap-2 p-4">
+        <span className="mr-1 text-sm text-ink-muted">Channels</span>
+        {platforms.map((platform) => {
+          const active = selected.includes(platform);
+          return (
+            <button
+              key={platform}
+              type="button"
+              onClick={() => toggle(platform)}
+              aria-pressed={active}
+              className={`chip transition-colors ${
+                active ? "!border-violet-400/40 !bg-violet-400/15 !text-violet-200" : ""
+              }`}
+            >
+              <span
+                className="size-1.5 rounded-full"
+                style={{ background: PLATFORM_META[platform]?.color }}
+                aria-hidden
+              />
+              {PLATFORM_META[platform]?.label ?? platform}
+            </button>
+          );
+        })}
+      </Card>
+
+      {stats.length === 0 ? (
+        <Card>
+          <EmptyState
+            icon={<GitCompareArrows className="size-5" />}
+            title="Pick at least one channel"
+            description="Select channels above to build the comparison."
+          />
+        </Card>
+      ) : (
+        <>
+          {/* Scorecards ---------------------------------------------- */}
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {stats.map((entry) => (
+              <Card key={entry.platform} interactive lit className="p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    <span
+                      className="size-3 rounded-full"
+                      style={{ background: entry.color }}
+                      aria-hidden
+                    />
+                    <h3 className="font-semibold text-ink">{entry.label}</h3>
+                  </div>
+                  {winner?.platform === entry.platform && (
+                    <Badge tone="success">
+                      <Trophy className="size-3" />
+                      Best rate
+                    </Badge>
+                  )}
+                </div>
+
+                <p className="mt-4 text-3xl font-semibold tracking-tight text-ink">
+                  <span className="tabular">{entry.summary.rate.toFixed(2)}</span>
+                  <span className="text-lg text-ink-faint">%</span>
                 </p>
-              </div>
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={handleRefresh}
-                  className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  Refresh Data
-                </button>
-              </div>
-            </div>
+                <p className="text-xs text-ink-faint">engagement rate</p>
 
-            {/* Error Message */}
-            {error && (
-              <div className="bg-red-50 border border-red-200 rounded-xl p-6 mb-8">
-                <div className="flex items-start">
-                  <div className="flex-shrink-0">
-                    <div className="w-10 h-10 bg-red-100 rounded-full flex items-center justify-center">
-                      <span className="text-red-600 text-xl">⚠️</span>
-                    </div>
-                  </div>
-                  <div className="ml-4">
-                    <h3 className="text-lg font-medium text-red-800">Data Loading Error</h3>
-                    <div className="mt-2 text-red-700">
-                      <p>{error}</p>
-                    </div>
-                    <div className="mt-4">
-                      <button
-                        onClick={handleRefresh}
-                        className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-red-600 hover:bg-red-700"
-                      >
-                        Try Again
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Controls */}
-            <div className="bg-white rounded-xl shadow p-6 mb-8">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Comparison Type
-                  </label>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setComparisonType('overview')}
-                      className={`px-4 py-2 rounded-lg ${comparisonType === 'overview' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-700'}`}
-                    >
-                      📊 Overview
-                    </button>
-                    <button
-                      onClick={() => setComparisonType('platforms')}
-                      className={`px-4 py-2 rounded-lg ${comparisonType === 'platforms' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-700'}`}
-                    >
-                      📱 Platforms
-                    </button>
-                    <button
-                      onClick={() => setComparisonType('contentTypes')}
-                      className={`px-4 py-2 rounded-lg ${comparisonType === 'contentTypes' ? 'bg-indigo-600 text-white' : 'bg-gray-100 text-gray-700'}`}
-                    >
-                      🎬 Content Types
-                    </button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Time Range
-                  </label>
-                  <select
-                    value={timeRange}
-                    onChange={(e) => setTimeRange(e.target.value as any)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                  >
-                    <option value="all">All Time</option>
-                    <option value="30days">Last 30 Days</option>
-                    <option value="7days">Last 7 Days</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Sort By
-                  </label>
-                  <select
-                    value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as any)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
-                  >
-                    <option value="engagement">Engagement Rate</option>
-                    <option value="posts">Number of Posts</option>
-                    <option value="likes">Total Likes</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-
-            {/* Database Info */}
-            <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-8">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-blue-100 rounded-full flex items-center justify-center">
-                    <span className="text-blue-600">💾</span>
-                  </div>
-                  <div>
-                    <p className="text-sm font-medium text-blue-900">Connected to Supabase</p>
-                    <p className="text-xs text-blue-700">tkcouzqipyiaypdyasew.supabase.co</p>
-                  </div>
-                </div>
-                <div className="text-sm text-blue-700">
-                  {comparisonData?.overall.totalPosts || 0} posts loaded
-                </div>
-              </div>
-            </div>
-
-            {comparisonData && (
-              <>
-                {/* Overview */}
-                {comparisonType === 'overview' && (
-                  <div className="space-y-8">
-                    {/* Overall Stats */}
-                    <div className="bg-white rounded-xl shadow">
-                      <div className="px-6 py-4 border-b border-gray-200">
-                        <h2 className="text-xl font-bold text-gray-900">📈 Overall Performance</h2>
-                      </div>
-                      <div className="p-6">
-                        <div className="grid grid-cols-2 md:grid-cols-5 gap-6">
-                          <div className="text-center p-6 bg-gray-50 rounded-xl">
-                            <div className="text-3xl font-bold text-indigo-600">{comparisonData.overall.totalPosts}</div>
-                            <div className="text-sm text-gray-600 mt-2">Total Posts</div>
-                          </div>
-                          <div className="text-center p-6 bg-gray-50 rounded-xl">
-                            <div className="text-3xl font-bold text-indigo-600">{comparisonData.overall.totalLikes.toLocaleString()}</div>
-                            <div className="text-sm text-gray-600 mt-2">Total Likes</div>
-                          </div>
-                          <div className="text-center p-6 bg-gray-50 rounded-xl">
-                            <div className="text-3xl font-bold text-indigo-600">{comparisonData.overall.totalComments.toLocaleString()}</div>
-                            <div className="text-sm text-gray-600 mt-2">Total Comments</div>
-                          </div>
-                          <div className="text-center p-6 bg-gray-50 rounded-xl">
-                            <div className="text-3xl font-bold text-indigo-600">{comparisonData.overall.totalShares.toLocaleString()}</div>
-                            <div className="text-sm text-gray-600 mt-2">Total Shares</div>
-                          </div>
-                          <div className="text-center p-6 bg-gray-50 rounded-xl">
-                            <div className="text-3xl font-bold text-indigo-600">{comparisonData.overall.avgEngagement}%</div>
-                            <div className="text-sm text-gray-600 mt-2">Avg. Engagement</div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Platform vs Content Type Comparison */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                      {/* Top Platforms */}
-                      <div className="bg-white rounded-xl shadow">
-                        <div className="px-6 py-4 border-b border-gray-200">
-                          <h2 className="text-xl font-bold text-gray-900">📱 Top Platforms</h2>
-                        </div>
-                        <div className="p-6">
-                          <div className="space-y-4">
-                            {comparisonData.platforms.slice(0, 4).map((platform, index) => (
-                              <div key={platform.name} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:border-gray-300 transition-colors">
-                                <div className="flex items-center gap-3">
-                                  <div 
-                                    className="w-10 h-10 rounded-lg flex items-center justify-center text-white"
-                                    style={{ backgroundColor: getPlatformColor(platform.name) }}
-                                  >
-                                    {getPlatformIcon(platform.name)}
-                                  </div>
-                                  <div>
-                                    <div className="font-semibold text-gray-900">{platform.name}</div>
-                                    <div className="text-sm text-gray-600">{platform.totalPosts} posts</div>
-                                  </div>
-                                </div>
-                                <div className="text-right">
-                                  <div className="text-lg font-bold" style={{ color: getPerformanceColor(platform.avgEngagement) }}>
-                                    {platform.avgEngagement}%
-                                  </div>
-                                  <div className="text-sm" style={{ color: getPerformanceColor(platform.avgEngagement) }}>
-                                    {platform.performance}
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Top Content Types */}
-                      <div className="bg-white rounded-xl shadow">
-                        <div className="px-6 py-4 border-b border-gray-200">
-                          <h2 className="text-xl font-bold text-gray-900">🎬 Top Content Types</h2>
-                        </div>
-                        <div className="p-6">
-                          <div className="space-y-4">
-                            {comparisonData.contentTypes.slice(0, 4).map((contentType, index) => (
-                              <div key={contentType.type} className="flex items-center justify-between p-4 border border-gray-200 rounded-lg hover:border-gray-300 transition-colors">
-                                <div className="flex items-center gap-3">
-                                  <div 
-                                    className="w-10 h-10 rounded-lg flex items-center justify-center text-white"
-                                    style={{ backgroundColor: getContentTypeColor(contentType.type) }}
-                                  >
-                                    {getContentTypeIcon(contentType.type)}
-                                  </div>
-                                  <div>
-                                    <div className="font-semibold text-gray-900">{contentType.type.charAt(0).toUpperCase() + contentType.type.slice(1)}</div>
-                                    <div className="text-sm text-gray-600">{contentType.totalPosts} posts</div>
-                                  </div>
-                                </div>
-                                <div className="text-right">
-                                  <div className="text-lg font-bold" style={{ color: getPerformanceColor(contentType.avgEngagement) }}>
-                                    {contentType.avgEngagement}%
-                                  </div>
-                                  <div className="text-sm" style={{ color: getPerformanceColor(contentType.avgEngagement) }}>
-                                    {contentType.performance}
-                                  </div>
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Platforms Comparison */}
-                {comparisonType === 'platforms' && (
-                  <div className="bg-white rounded-xl shadow">
-                    <div className="px-6 py-4 border-b border-gray-200">
-                      <h2 className="text-xl font-bold text-gray-900">📱 Platform Comparison</h2>
-                      <p className="text-gray-600 mt-1">Compare performance across different social platforms</p>
-                    </div>
-                    <div className="p-6">
-                      {comparisonData.platforms.length === 0 ? (
-                        <div className="text-center py-12">
-                          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <span className="text-2xl">📱</span>
-                          </div>
-                          <h3 className="text-lg font-semibold text-gray-900 mb-2">No Platform Data</h3>
-                          <p className="text-gray-600">Add platform information to your posts to see comparisons.</p>
-                        </div>
-                      ) : (
-                        <div className="overflow-x-auto">
-                          <table className="min-w-full divide-y divide-gray-200">
-                            <thead>
-                              <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Platform</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Posts</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Likes</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Comments</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Shares</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Engagement</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Performance</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-200">
-                              {comparisonData.platforms.map((platform) => (
-                                <tr key={platform.name} className="hover:bg-gray-50">
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="flex items-center gap-3">
-                                      <div 
-                                        className="w-8 h-8 rounded-lg flex items-center justify-center text-white"
-                                        style={{ backgroundColor: getPlatformColor(platform.name) }}
-                                      >
-                                        {getPlatformIcon(platform.name)}
-                                      </div>
-                                      <span className="font-medium text-gray-900">{platform.name}</span>
-                                    </div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-lg font-bold">{platform.totalPosts}</div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-lg font-bold text-indigo-600">{platform.totalLikes.toLocaleString()}</div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-lg font-bold text-green-600">{platform.totalComments.toLocaleString()}</div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-lg font-bold text-purple-600">{platform.totalShares.toLocaleString()}</div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="flex items-center gap-2">
-                                      <div className="text-lg font-bold" style={{ color: getPerformanceColor(platform.avgEngagement) }}>
-                                        {platform.avgEngagement}%
-                                      </div>
-                                      <div className="w-24 h-2 bg-gray-200 rounded-full overflow-hidden">
-                                        <div 
-                                          className="h-full rounded-full"
-                                          style={{ 
-                                            width: `${Math.min(platform.avgEngagement, 100)}%`,
-                                            backgroundColor: getPerformanceColor(platform.avgEngagement)
-                                          }}
-                                        ></div>
-                                      </div>
-                                    </div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <span 
-                                      className="px-3 py-1 rounded-full text-sm font-medium"
-                                      style={{ 
-                                        backgroundColor: `${getPerformanceColor(platform.avgEngagement)}20`,
-                                        color: getPerformanceColor(platform.avgEngagement)
-                                      }}
-                                    >
-                                      {platform.performance}
-                                    </span>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Content Types Comparison */}
-                {comparisonType === 'contentTypes' && (
-                  <div className="bg-white rounded-xl shadow">
-                    <div className="px-6 py-4 border-b border-gray-200">
-                      <h2 className="text-xl font-bold text-gray-900">🎬 Content Type Comparison</h2>
-                      <p className="text-gray-600 mt-1">Compare performance across different content formats</p>
-                    </div>
-                    <div className="p-6">
-                      {comparisonData.contentTypes.length === 0 ? (
-                        <div className="text-center py-12">
-                          <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <span className="text-2xl">🎬</span>
-                          </div>
-                          <h3 className="text-lg font-semibold text-gray-900 mb-2">No Content Type Data</h3>
-                          <p className="text-gray-600">Add content type information to your posts to see comparisons.</p>
-                        </div>
-                      ) : (
-                        <div className="overflow-x-auto">
-                          <table className="min-w-full divide-y divide-gray-200">
-                            <thead>
-                              <tr>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Content Type</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Posts</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Likes</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Comments</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Shares</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Engagement</th>
-                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Performance</th>
-                              </tr>
-                            </thead>
-                            <tbody className="divide-y divide-gray-200">
-                              {comparisonData.contentTypes.map((contentType) => (
-                                <tr key={contentType.type} className="hover:bg-gray-50">
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="flex items-center gap-3">
-                                      <div 
-                                        className="w-8 h-8 rounded-lg flex items-center justify-center text-white"
-                                        style={{ backgroundColor: getContentTypeColor(contentType.type) }}
-                                      >
-                                        {getContentTypeIcon(contentType.type)}
-                                      </div>
-                                      <span className="font-medium text-gray-900">
-                                        {contentType.type.charAt(0).toUpperCase() + contentType.type.slice(1)}
-                                      </span>
-                                    </div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-lg font-bold">{contentType.totalPosts}</div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-lg font-bold text-indigo-600">{contentType.totalLikes.toLocaleString()}</div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-lg font-bold text-green-600">{contentType.totalComments.toLocaleString()}</div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="text-lg font-bold text-purple-600">{contentType.totalShares.toLocaleString()}</div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <div className="flex items-center gap-2">
-                                      <div className="text-lg font-bold" style={{ color: getPerformanceColor(contentType.avgEngagement) }}>
-                                        {contentType.avgEngagement}%
-                                      </div>
-                                      <div className="w-24 h-2 bg-gray-200 rounded-full overflow-hidden">
-                                        <div 
-                                          className="h-full rounded-full"
-                                          style={{ 
-                                            width: `${Math.min(contentType.avgEngagement, 100)}%`,
-                                            backgroundColor: getPerformanceColor(contentType.avgEngagement)
-                                          }}
-                                        ></div>
-                                      </div>
-                                    </div>
-                                  </td>
-                                  <td className="px-6 py-4 whitespace-nowrap">
-                                    <span 
-                                      className="px-3 py-1 rounded-full text-sm font-medium"
-                                      style={{ 
-                                        backgroundColor: `${getPerformanceColor(contentType.avgEngagement)}20`,
-                                        color: getPerformanceColor(contentType.avgEngagement)
-                                      }}
-                                    >
-                                      {contentType.performance}
-                                    </span>
-                                  </td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-              </>
-            )}
-
-            {/* Empty State */}
-            {!comparisonData && !isLoading && !error && (
-              <div className="bg-white rounded-xl shadow p-12 text-center">
-                <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                  <span className="text-3xl">📊</span>
-                </div>
-                <h3 className="text-xl font-semibold text-gray-900 mb-3">No Data Available</h3>
-                <p className="text-gray-600 mb-6">
-                  No posts found in your database. Add some posts to see comparisons.
-                </p>
-                <button
-                  onClick={handleRefresh}
-                  className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-medium"
-                >
-                  🔄 Refresh Data
-                </button>
-              </div>
-            )}
+                <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-2.5 border-t border-white/8 pt-4 text-sm">
+                  <Cell label="Posts" value={String(entry.summary.totalPosts)} />
+                  <Cell label="Reach" value={formatCompact(entry.summary.reach)} />
+                  <Cell label="Likes" value={formatCompact(entry.summary.likes)} />
+                  <Cell label="Comments" value={formatCompact(entry.summary.comments)} />
+                  <Cell label="Shares" value={formatCompact(entry.summary.shares)} />
+                  <Cell label="Score" value={`${entry.summary.score}/100`} />
+                </dl>
+              </Card>
+            ))}
           </div>
-        </main>
-      </div>
+
+          {/* Trend ---------------------------------------------------- */}
+          <Card lit className="p-5 sm:p-6">
+            <SectionHeading
+              title="Engagement over time"
+              description="Weighted engagement per day for each selected channel."
+            />
+            <ChartFrame height={300} className="mt-5">
+              <ResponsiveContainer>
+                <LineChart data={trendData} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="label" {...axisProps} minTickGap={28} />
+                  <YAxis {...axisProps} tickFormatter={formatCompact} width={52} />
+                  <Tooltip content={<ChartTooltip />} cursor={{ stroke: "var(--line-strong)" }} />
+                  <Legend
+                    wrapperStyle={{ fontSize: 12, color: "var(--ink-muted)", paddingTop: 8 }}
+                  />
+                  {stats.map((entry) => (
+                    <Line
+                      key={entry.platform}
+                      type="monotone"
+                      dataKey={entry.label}
+                      stroke={entry.color}
+                      strokeWidth={2.5}
+                      dot={false}
+                      activeDot={{ r: 4 }}
+                    />
+                  ))}
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartFrame>
+          </Card>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Metric bars ------------------------------------------- */}
+            <Card lit className="p-5 sm:p-6">
+              <SectionHeading
+                title="Interaction mix"
+                description="Raw totals per interaction type."
+              />
+              <ChartFrame height={300} className="mt-5">
+                <ResponsiveContainer>
+                  <BarChart data={comparisonBars} margin={{ top: 8, right: 8, left: -18, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                    <XAxis dataKey="metric" {...axisProps} />
+                    <YAxis {...axisProps} tickFormatter={formatCompact} width={52} />
+                    <Tooltip content={<ChartTooltip />} cursor={{ fill: "oklch(1 0 0 / 0.04)" }} />
+                    <Legend
+                      wrapperStyle={{ fontSize: 12, color: "var(--ink-muted)", paddingTop: 8 }}
+                    />
+                    {stats.map((entry) => (
+                      <Bar
+                        key={entry.platform}
+                        dataKey={entry.label}
+                        fill={entry.color}
+                        radius={[6, 6, 0, 0]}
+                        maxBarSize={38}
+                      />
+                    ))}
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartFrame>
+            </Card>
+
+            {/* Radar -------------------------------------------------- */}
+            <Card lit className="p-5 sm:p-6">
+              <SectionHeading
+                title="Channel profile"
+                description="Each axis normalised to the strongest channel (100)."
+              />
+              <ChartFrame height={300} className="mt-5">
+                <ResponsiveContainer>
+                  <RadarChart data={radarData} outerRadius="72%">
+                    <PolarGrid stroke="oklch(1 0 0 / 0.08)" />
+                    <PolarAngleAxis
+                      dataKey="axis"
+                      tick={{ fill: "var(--ink-faint)", fontSize: 11 }}
+                    />
+                    <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
+                    <Tooltip content={<ChartTooltip valueFormatter={(n) => String(n)} />} />
+                    <Legend
+                      wrapperStyle={{ fontSize: 12, color: "var(--ink-muted)", paddingTop: 8 }}
+                    />
+                    {stats.map((entry) => (
+                      <Radar
+                        key={entry.platform}
+                        name={entry.label}
+                        dataKey={entry.label}
+                        stroke={entry.color}
+                        fill={entry.color}
+                        fillOpacity={0.18}
+                        strokeWidth={2}
+                      />
+                    ))}
+                  </RadarChart>
+                </ResponsiveContainer>
+              </ChartFrame>
+            </Card>
+          </div>
+
+          {/* Head to head ------------------------------------------- */}
+          <Card lit className="overflow-hidden">
+            <div className="p-5 sm:p-6">
+              <SectionHeading
+                title="Best post per channel"
+                description="The single highest-engagement post on each channel."
+              />
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[680px] text-sm">
+                <thead>
+                  <tr className="border-y border-white/8 text-left text-xs uppercase tracking-wider text-ink-faint">
+                    <th className="px-5 py-3 font-medium sm:px-6">Channel</th>
+                    <th className="px-3 py-3 font-medium">Top post</th>
+                    <th className="px-3 py-3 text-right font-medium">Reach</th>
+                    <th className="px-5 py-3 text-right font-medium sm:px-6">Rate</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {stats.map((entry) => {
+                    const best = [...entry.posts].sort(
+                      (a, b) => weightedEngagement(b) - weightedEngagement(a),
+                    )[0];
+                    if (!best) return null;
+                    return (
+                      <tr key={entry.platform} className="border-b border-white/5 last:border-0">
+                        <td className="px-5 py-3.5 sm:px-6">
+                          <span className="chip">
+                            <span
+                              className="size-1.5 rounded-full"
+                              style={{ background: entry.color }}
+                              aria-hidden
+                            />
+                            {entry.label}
+                          </span>
+                        </td>
+                        <td className="max-w-[320px] px-3 py-3.5">
+                          <p className="truncate font-medium text-ink">{best.title}</p>
+                        </td>
+                        <td className="tabular px-3 py-3.5 text-right text-ink-muted">
+                          {formatCompact(best.reach)}
+                        </td>
+                        <td className="px-5 py-3.5 text-right sm:px-6">
+                          <span className="tabular font-semibold text-emerald-300">
+                            {engagementRate(best).toFixed(1)}%
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        </>
+      )}
+    </>
+  );
+}
+
+function Cell({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs text-ink-faint">{label}</dt>
+      <dd className="tabular font-semibold text-ink">{value}</dd>
     </div>
   );
 }

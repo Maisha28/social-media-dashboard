@@ -1,178 +1,232 @@
-'use client'
+"use client";
 
-import { useState, useEffect, useRef } from 'react'
-import Sidebar from '@/components/Sidebar'
-import { supabase } from '@/lib/supabase'
+import * as React from "react";
+import { Bot, CornerDownLeft, Loader2, Sparkles, User } from "lucide-react";
+import { Badge, Card, PageHeader } from "@/components/ui";
+import { useAnalytics } from "@/lib/use-analytics";
+import { byPlatform, formatCompact, weightedEngagement } from "@/lib/analytics";
 
 interface Message {
-  id: string
-  text: string
-  sender: 'user' | 'ai'
-  timestamp: Date
+  id: string;
+  role: "user" | "assistant";
+  text: string;
 }
 
-interface AnalysisData {
-  posts: any[]
-  summary: any
+const SUGGESTIONS = [
+  "Which channel should I post more on this week?",
+  "Why did my engagement drop recently?",
+  "What do my top five posts have in common?",
+  "How does my engagement rate compare to a healthy benchmark?",
+];
+
+let messageCounter = 0;
+function nextId() {
+  messageCounter += 1;
+  return `m${messageCounter}`;
 }
 
-export default function AIChatPage() {
-  const [messages, setMessages] = useState<Message[]>([
+export default function AskAiPage() {
+  const { posts, summary, source } = useAnalytics();
+
+  const [messages, setMessages] = React.useState<Message[]>([
     {
-      id: 'welcome',
-      text:
-        "Hi! I'm your AI Social Media Analytics Assistant.\n\n" +
-        "I can analyze your data, explain concepts, answer strategy questions, " +
-        "and help with anything related to social media analytics.\n\n" +
-        "Ask me anything.",
-      sender: 'ai',
-      timestamp: new Date(),
+      id: "welcome",
+      role: "assistant",
+      text: "I have your last 30 days of posts loaded. Ask me about engagement, channel mix, timing, or which post to make next — I'll answer from your numbers, not generic advice.",
     },
-  ])
+  ]);
+  const [input, setInput] = React.useState("");
+  const [sending, setSending] = React.useState(false);
+  const [error, setError] = React.useState("");
 
-  const [input, setInput] = useState('')
-  const [isLoading, setIsLoading] = useState(false)
-  const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null)
+  const scrollRef = React.useRef<HTMLDivElement>(null);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null)
+  React.useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }, [messages, sending]);
 
-  useEffect(() => {
-    loadAnalytics()
-  }, [])
+  /** Compact digest sent to the model — never the full post list. */
+  const digest = React.useMemo(() => {
+    const channels = byPlatform(posts).map((entry) => ({
+      channel: entry.platform,
+      posts: entry.posts,
+      engagement: entry.engagement,
+      reach: entry.reach,
+    }));
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    const top = [...posts]
+      .sort((a, b) => weightedEngagement(b) - weightedEngagement(a))
+      .slice(0, 5)
+      .map((post) => ({
+        title: post.title,
+        channel: post.platform,
+        likes: post.likes,
+        comments: post.comments,
+        shares: post.shares,
+        reach: post.reach,
+        date: post.created_at.slice(0, 10),
+      }));
 
-  // ================= DATA LOAD =================
-  const loadAnalytics = async () => {
-    const { data: posts } = await supabase
-      .from('posts')
-      .select('*')
-      .order('created_at', { ascending: false })
+    return { summary, channels, topPosts: top, dataSource: source };
+  }, [posts, summary, source]);
 
-    if (!posts || posts.length === 0) return
+  async function send(question: string) {
+    const trimmed = question.trim();
+    if (!trimmed || sending) return;
 
-    setAnalysisData({
-      posts,
-      summary: {
-        totalPosts: posts.length,
-      },
-    })
-  }
-
-  // ================= MESSAGE HELPERS =================
-  const addMessage = (text: string, sender: 'user' | 'ai') => {
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: Date.now().toString(),
-        text,
-        sender,
-        timestamp: new Date(),
-      },
-    ])
-  }
-
-  // ================= SEND MESSAGE =================
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return
-
-    const userMessage = input.trim()
-    setInput('')
-    addMessage(userMessage, 'user')
-    setIsLoading(true)
+    setError("");
+    setInput("");
+    setMessages((current) => [...current, { id: nextId(), role: "user", text: trimmed }]);
+    setSending(true);
 
     try {
-      const res = await fetch('/api/ai', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          question: userMessage,
-          analyticsSummary: analysisData?.summary,
-          analyticsPosts: analysisData?.posts,
-        }),
-      })
+      const res = await fetch("/api/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question: trimmed, analytics: digest }),
+      });
+      const json = await res.json().catch(() => ({}));
 
-      const data = await res.json()
-      addMessage(data.answer ?? 'No response from AI.', 'ai')
-    } catch (error) {
-      addMessage(
-        'There was an error talking to the AI. Please try again.',
-        'ai'
-      )
+      if (!res.ok) {
+        setError(json.error ?? "The assistant is unavailable right now.");
+        return;
+      }
+
+      setMessages((current) => [
+        ...current,
+        { id: nextId(), role: "assistant", text: json.answer },
+      ]);
+    } catch {
+      setError("Network error. Check your connection and try again.");
     } finally {
-      setIsLoading(false)
+      setSending(false);
     }
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex">
-      <Sidebar />
+    <>
+      <PageHeader
+        eyebrow="Assistant"
+        title="Ask AI"
+        description="An analyst that can only see your analytics — so it answers with your numbers rather than platitudes."
+        actions={
+          <Badge tone={source === "demo" ? "warning" : "success"}>
+            {source === "demo" ? "Reading sample data" : "Reading live data"}
+          </Badge>
+        }
+      />
 
-      <main className="flex-1 ml-64 p-6">
-        <div className="max-w-5xl mx-auto bg-white rounded-xl shadow border">
-
-          {/* HEADER */}
-          <div className="border-b p-6">
-            <h1 className="text-2xl font-bold">AI Analytics Assistant</h1>
-            <p className="text-sm text-gray-600">
-              Generative AI powered insights from your Supabase data
-            </p>
-          </div>
-
-          {/* CHAT */}
-          <div className="h-[520px] overflow-y-auto p-6 space-y-6">
-            {messages.map((msg) => (
-              <div
-                key={msg.id}
-                className={`flex ${
-                  msg.sender === 'user' ? 'justify-end' : 'justify-start'
+      <Card lit className="flex h-[calc(100dvh-17rem)] min-h-[460px] flex-col overflow-hidden">
+        <div ref={scrollRef} className="flex-1 space-y-5 overflow-y-auto p-5 sm:p-6">
+          {messages.map((message) => (
+            <div
+              key={message.id}
+              className={`flex gap-3 ${message.role === "user" ? "flex-row-reverse" : ""}`}
+            >
+              <span
+                className={`grid size-8 shrink-0 place-items-center rounded-xl border border-white/10 ${
+                  message.role === "assistant"
+                    ? "bg-gradient-to-br from-violet-500/30 to-cyan-500/20 text-violet-200"
+                    : "bg-white/5 text-ink-muted"
                 }`}
               >
-                <div
-                  className={`max-w-[80%] px-5 py-3 rounded-xl ${
-                    msg.sender === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-900'
-                  }`}
-                >
-                  <div className="whitespace-pre-line">{msg.text}</div>
-                  <div className="text-xs mt-2 opacity-60">
-                    {msg.timestamp.toLocaleTimeString()}
-                  </div>
-                </div>
+                {message.role === "assistant" ? (
+                  <Sparkles className="size-4" />
+                ) : (
+                  <User className="size-4" />
+                )}
+              </span>
+
+              <div
+                className={`max-w-[min(46rem,85%)] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
+                  message.role === "assistant"
+                    ? "border border-white/8 bg-white/[0.04] text-ink"
+                    : "bg-gradient-to-br from-violet-600 to-indigo-600 text-white"
+                }`}
+              >
+                <p className="whitespace-pre-wrap">{message.text}</p>
               </div>
-            ))}
+            </div>
+          ))}
 
-            {isLoading && (
-              <div className="text-gray-500 text-sm">AI is thinking...</div>
-            )}
+          {sending && (
+            <div className="flex gap-3">
+              <span className="grid size-8 shrink-0 place-items-center rounded-xl border border-white/10 bg-gradient-to-br from-violet-500/30 to-cyan-500/20 text-violet-200">
+                <Sparkles className="size-4" />
+              </span>
+              <div className="flex items-center gap-2 rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-3 text-sm text-ink-muted">
+                <Loader2 className="size-3.5 animate-spin" />
+                Reading your analytics…
+              </div>
+            </div>
+          )}
 
-            <div ref={messagesEndRef} />
-          </div>
-
-          {/* INPUT */}
-          <div className="border-t p-4 flex gap-3">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-              placeholder="Ask anything about your analytics, strategy, or concepts..."
-              className="flex-1 border rounded-lg px-4 py-3"
-              disabled={isLoading}
-            />
-            <button
-              onClick={handleSend}
-              disabled={isLoading}
-              className="bg-blue-600 text-white px-6 py-3 rounded-lg"
+          {error && (
+            <div
+              role="alert"
+              className="rounded-xl border border-rose-400/25 bg-rose-400/10 px-4 py-3 text-sm text-rose-200"
             >
-              Send
-            </button>
-          </div>
+              {error}
+            </div>
+          )}
         </div>
-      </main>
-    </div>
-  )
+
+        {messages.length <= 1 && (
+          <div className="flex flex-wrap gap-2 border-t border-white/8 px-5 py-4 sm:px-6">
+            {SUGGESTIONS.map((suggestion) => (
+              <button
+                key={suggestion}
+                type="button"
+                onClick={() => send(suggestion)}
+                className="chip transition-colors hover:border-violet-400/40 hover:text-violet-200"
+              >
+                {suggestion}
+              </button>
+            ))}
+          </div>
+        )}
+
+        <form
+          className="flex items-end gap-2 border-t border-white/8 p-4 sm:px-6"
+          onSubmit={(event) => {
+            event.preventDefault();
+            send(input);
+          }}
+        >
+          <div className="relative flex-1">
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              onKeyDown={(event) => {
+                // Enter sends; Shift+Enter inserts a newline.
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  send(input);
+                }
+              }}
+              rows={1}
+              placeholder="Ask about your engagement, channels or what to post next…"
+              aria-label="Your question"
+              className="input max-h-40 resize-none py-3 pr-11"
+            />
+            <CornerDownLeft className="pointer-events-none absolute right-3.5 top-3.5 size-4 text-ink-faint" />
+          </div>
+          <button
+            type="submit"
+            disabled={sending || input.trim().length === 0}
+            className="btn btn-primary h-[46px]"
+          >
+            {sending ? <Loader2 className="size-4 animate-spin" /> : <Bot className="size-4" />}
+            Send
+          </button>
+        </form>
+      </Card>
+
+      <p className="text-center text-xs text-ink-faint">
+        The assistant sees a summary of {posts.length} posts —{" "}
+        {formatCompact(summary.reach)} reach, {formatCompact(summary.weighted)} weighted
+        engagement. It never receives your credentials or access tokens.
+      </p>
+    </>
+  );
 }

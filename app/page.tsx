@@ -1,28 +1,10 @@
-'use client';
+import { redirect } from "next/navigation";
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-
+/**
+ * Middleware has already decided whether this request is authenticated, so the
+ * root can redirect on the server. The previous version rendered a spinner and
+ * redirected from a useEffect, which cost an extra round trip and flashed.
+ */
 export default function Home() {
-  const router = useRouter();
-
-  useEffect(() => {
-    // Check if user is logged in
-    const isLoggedIn = localStorage.getItem('isLoggedIn');
-    
-    if (isLoggedIn) {
-      router.push('/dashboard');
-    } else {
-      router.push('/login');
-    }
-  }, [router]);
-
-  return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-      <div className="text-center">
-        <div className="w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
-        <p className="mt-4 text-gray-600">Redirecting...</p>
-      </div>
-    </div>
-  );
+  redirect("/dashboard");
 }

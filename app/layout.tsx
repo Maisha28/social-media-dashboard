@@ -1,58 +1,37 @@
-'use client';
+import type { Metadata, Viewport } from "next";
+import AppShell from "@/components/AppShell";
+import "./globals.css";
 
-import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
-import { Inter } from 'next/font/google';
-import './globals.css';
+export const metadata: Metadata = {
+  title: {
+    default: "SocialPulse — Social media analytics",
+    template: "%s · SocialPulse",
+  },
+  description:
+    "Connect Instagram and Facebook to track reach, engagement and growth, with AI-generated insights and exportable reports.",
+  applicationName: "SocialPulse",
+  openGraph: {
+    title: "SocialPulse — Social media analytics",
+    description:
+      "Connect Instagram and Facebook to track reach, engagement and growth in one workspace.",
+    type: "website",
+  },
+  robots: { index: false, follow: false },
+};
 
-const inter = Inter({ subsets: ['latin'] });
+export const viewport: Viewport = {
+  themeColor: "#141824",
+  width: "device-width",
+  initialScale: 1,
+};
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
-  const pathname = usePathname();
-  const router = useRouter();
-  const [isCheckingAuth, setIsCheckingAuth] = useState(true);
-
-  useEffect(() => {
-    // Skip auth check for login page
-    if (pathname === '/login') {
-      setIsCheckingAuth(false);
-      return;
-    }
-
-    // Check if user is logged in
-    const isLoggedIn = localStorage.getItem('isLoggedIn');
-    
-    if (!isLoggedIn) {
-      router.push('/login');
-    } else {
-      setIsCheckingAuth(false);
-    }
-  }, [pathname, router]);
-
-  // Show loading while checking authentication
-  if (isCheckingAuth && pathname !== '/login') {
-    return (
-      <html lang="en">
-        <body className={`${inter.className} bg-gray-50`}>
-          <div className="min-h-screen flex items-center justify-center">
-            <div className="text-center">
-              <div className="w-16 h-16 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto"></div>
-              <p className="mt-4 text-gray-600">Loading dashboard...</p>
-            </div>
-          </div>
-        </body>
-      </html>
-    );
-  }
-
+}: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
-      <body className={`${inter.className} bg-gray-50`}>
-        {children}
+    <html lang="en" suppressHydrationWarning>
+      <body>
+        <AppShell>{children}</AppShell>
       </body>
     </html>
   );
